@@ -1,0 +1,371 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Агент-сборщик — локальные приложения</title>
+<style>
+:root {
+  --bg: #f6f7f9; --panel: #fff; --border: #e3e6ea; --text: #1f2937; --muted: #6b7280;
+  --accent: #4f46e5; --accent-light: #eef2ff; --ok: #10b981; --warn: #f59e0b; --bad: #ef4444;
+  --radius: 10px; --mono: ui-monospace, Consolas, monospace;
+}
+[data-theme="dark"] {
+  --bg: #0f172a; --panel: #1e293b; --border: #334155; --text: #f1f5f9; --muted: #94a3b8;
+  --accent: #818cf8; --accent-light: #312e81;
+}
+* { box-sizing: border-box; margin: 0; }
+body { font-family: 'Segoe UI', system-ui, sans-serif; background: var(--bg); color: var(--text);
+       height: 100vh; display: flex; flex-direction: column; }
+header { display: flex; align-items: center; gap: 0.75rem; padding: 0.6rem 1rem;
+         background: var(--panel); border-bottom: 1px solid var(--border); }
+header h1 { font-size: 1rem; font-weight: 700; }
+.dot { width: 10px; height: 10px; border-radius: 50%; background: var(--bad); display: inline-block; }
+.dot.ok { background: var(--ok); }
+.dot { animation: none; }
+#llm-label { font-size: 0.8rem; color: var(--muted); }
+.spacer { flex: 1; }
+button { font: inherit; cursor: pointer; border: 1px solid var(--border); background: var(--panel);
+         color: var(--text); border-radius: 8px; padding: 0.45rem 0.8rem; }
+button:hover { border-color: var(--accent); }
+button:disabled { opacity: 0.5; cursor: not-allowed; }
+button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+button.danger { color: var(--bad); border-color: var(--bad); }
+input, textarea { font: inherit; color: var(--text); background: var(--panel);
+                  border: 1px solid var(--border); border-radius: 8px; padding: 0.45rem 0.6rem; }
+textarea { resize: vertical; }
+main { flex: 1; display: grid; grid-template-columns: 290px 1fr; gap: 1px;
+       background: var(--border); overflow: hidden; }
+.col { background: var(--bg); overflow-y: auto; padding: 0.9rem; }
+.card { background: var(--panel); border: 1px solid var(--border); border-radius: var(--radius);
+        padding: 0.9rem; margin-bottom: 0.9rem; }
+.card h2 { font-size: 0.85rem; text-transform: uppercase; letter-spacing: 0.04em;
+           color: var(--muted); margin-bottom: 0.6rem; }
+.proj-item { padding: 0.6rem 0.7rem; border: 1px solid var(--border); border-radius: 8px;
+             margin-bottom: 0.5rem; cursor: pointer; }
+.proj-item:hover { border-color: var(--accent); }
+.proj-item.active { border-color: var(--accent); background: var(--accent-light); }
+.proj-item .name { font-weight: 600; font-size: 0.92rem; }
+.proj-item .task { font-size: 0.78rem; color: var(--muted); margin-top: 0.2rem;
+                   display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+.field { margin-bottom: 0.6rem; }
+.field label { display: block; font-size: 0.8rem; color: var(--muted); margin-bottom: 0.25rem; }
+.field textarea, .field input { width: 100%; }
+.row { display: flex; gap: 0.5rem; align-items: center; }
+.plan-part { display: flex; justify-content: space-between; gap: 0.5rem; padding: 0.3rem 0;
+             border-bottom: 1px dashed var(--border); font-size: 0.88rem; }
+.plan-part:last-child { border-bottom: none; }
+.plan-part .lines { color: var(--muted); font-size: 0.78rem; white-space: nowrap; }
+.err { color: var(--bad); font-size: 0.82rem; margin-top: 0.4rem; }
+.okmsg { color: var(--ok); font-size: 0.82rem; }
+.note { font-size: 0.78rem; color: var(--muted); }
+#console { font-family: var(--mono); font-size: 0.76rem; white-space: pre-wrap;
+           background: #111827; color: #d1d5db; border-radius: 8px; padding: 0.7rem;
+           max-height: 260px; overflow-y: auto; }
+.badge { font-size: 0.75rem; padding: 0.15rem 0.5rem; border-radius: 99px; }
+.badge.run { background: #fef3c7; color: #92400e; }
+.badge.done { background: #d1fae5; color: #065f46; }
+.badge.fail { background: #fee2e2; color: #991b1b; }
+/* модалка настроек */
+#overlay { position: fixed; inset: 0; background: rgba(0,0,0,0.45); display: none;
+           align-items: center; justify-content: center; z-index: 50; }
+#overlay.open { display: flex; }
+#settings { background: var(--panel); border-radius: 14px; padding: 1.2rem;
+            width: 420px; max-width: 92vw; }
+#settings h2 { margin-bottom: 0.8rem; font-size: 1.05rem; }
+.slider-row { display: flex; align-items: center; gap: 0.6rem; margin-bottom: 0.7rem; }
+.slider-row input[type=range] { flex: 1; }
+.slider-row .val { font-family: var(--mono); font-size: 0.85rem; width: 3.2em; text-align: right; }
+.hint { font-size: 0.75rem; color: var(--muted); margin-top: 0.5rem; }
+</style>
+</head>
+<body>
+<header>
+  <h1>🛠 Агент-сборщик</h1>
+  <span id="llm-dot" class="dot"></span><span id="llm-label">модель не отвечает</span>
+  <div class="spacer"></div>
+  <span id="job-badge"></span>
+  <button onclick="openSettings()">⚙️ Настройки</button>
+  <button onclick="toggleTheme()" title="Светлая/тёмная">🌓</button>
+</header>
+
+<main>
+  <div class="col">
+    <div class="card">
+      <h2>Новый проект</h2>
+      <div class="field">
+        <label>Задача (что сделать)</label>
+        <textarea id="new-task" rows="4" placeholder="Например: игра тетрис на canvas: фигуры, поворот, счёт, следующий уровень каждые 10 линий"></textarea>
+      </div>
+      <div class="field">
+        <label>Имя проекта (латиницей, необязательно)</label>
+        <input id="new-name" placeholder="tetris">
+      </div>
+      <div class="field">
+        <label>Уроки прошлой версии — что не повторять (необязательно)</label>
+        <textarea id="new-lessons" rows="2" placeholder="Например: не использовать пространства имён, поле строить циклом, обработчик вешать на контейнер"></textarea>
+      </div>
+      <button class="primary" style="width:100%" id="btn-new" onclick="startNew()">🚀 Создать (ТЗ → план из 3 частей → сборка)</button>
+    </div>
+
+    <div class="card">
+      <h2>Проекты</h2>
+      <div id="proj-list"></div>
+    </div>
+  </div>
+
+  <div class="col">
+    <div class="card" id="proj-card" style="display:none">
+      <div class="row" style="justify-content:space-between">
+        <h2 id="proj-title" style="margin:0"></h2>
+        <div class="row">
+          <button onclick="doBuild()">🔨 Собрать</button>
+          <button onclick="doFix()" id="btn-fix">✅ Проверить и исправить</button>
+          <button onclick="doRestart()" id="btn-restart" title="Новый проект с той же задачей и уроками из ошибок этой версии"
+                  style="display:none">🔄 Перезапустить с уроками</button>
+        </div>
+      </div>
+      <p class="note" id="proj-task" style="margin:0.5rem 0"></p>
+      <p class="note" id="proj-dist"></p>
+      <div id="proj-plan"></div>
+      <div id="proj-errors"></div>
+      <div class="field" style="margin-top:0.8rem">
+        <label>Продолжить — инструкция агенту (он прочитает нужные части и перезапишет их)</label>
+        <textarea id="step-instr" rows="2" placeholder="Например: добавь паузу по клавише P и покажи подсказку внизу экрана"></textarea>
+      </div>
+      <div class="row">
+        <button class="primary" id="btn-step" onclick="doStep()">▶ Продолжить</button>
+        <span class="note">двигается медленно? уменьшите температуру в ⚙️ или уточните инструкцию</span>
+      </div>
+    </div>
+
+    <div class="card" id="empty-card">
+      <h2>Как это работает</h2>
+      <p class="note" style="line-height:1.5">
+        Конвейер под маленькие модели: <b>1)</b> модель пишет компактное ТЗ-реферат (SPEC.md),
+        <b>2)</b> в новой сессии строит план ровно из 3 частей — разметка + стили + весь JS одним
+        файлом (меньше стыков — меньше ошибок), <b>3)</b> каждая часть проверяется автоматически
+        (синтаксис, id, дубликаты, вызовы функций), <b>4)</b> максимум 2 раунда правок, затем
+        перегенерация части с нуля; если и это не помогло — проект перезапускается с уроками в ТЗ.<br><br>
+        1. Запустите сервер модели: <b>builder\START_server.bat</b> (или свой LLM на :8080).<br>
+        2. Опишите задачу слева и нажмите «Создать».<br>
+        3. Дальше — «Продолжить» с инструкциями, сколько нужно раз.<br>
+        Результат: <span style="font-family:var(--mono)">workspace/&lt;проект&gt;/dist/index.html</span>
+      </p>
+    </div>
+
+    <div class="card">
+      <div class="row" style="justify-content:space-between">
+        <h2 style="margin:0">Журнал</h2>
+        <button class="danger" id="btn-stop" onclick="doStop()" style="display:none">■ Остановить задачу</button>
+      </div>
+      <div id="console" style="margin-top:0.6rem">— пока тихо —</div>
+    </div>
+  </div>
+</main>
+
+<div id="overlay" onclick="if(event.target===this)closeSettings()">
+  <div id="settings">
+    <h2>⚙️ Настройки генерации</h2>
+    <div class="slider-row">
+      <span style="font-size:0.85rem;width:110px">Температура</span>
+      <input type="range" id="s-temp" min="0" max="1.5" step="0.05">
+      <span class="val" id="s-temp-v"></span>
+    </div>
+    <p class="hint" style="margin:0 0 0.7rem">Ниже — точнее и стабильнее (0.2–0.4 для кода). Выше — разнообразнее, но чаще ошибки.</p>
+    <div class="slider-row">
+      <span style="font-size:0.85rem;width:110px">Пауза, с</span>
+      <input type="range" id="s-cool" min="0" max="15" step="1">
+      <span class="val" id="s-cool-v"></span>
+    </div>
+    <p class="hint" style="margin:0 0 0.7rem">Пауза между запросами к модели — щадит питание ноутбука. 4–5 с рекомендовано.</p>
+    <div class="field">
+      <label>Макс. токенов на ответ</label>
+      <input id="s-maxtok" type="number" min="512" max="8192" step="256">
+    </div>
+    <div class="row" style="justify-content:flex-end;margin-top:0.9rem">
+      <button onclick="closeSettings()">Отмена</button>
+      <button class="primary" onclick="saveSettings()">💾 Сохранить</button>
+    </div>
+  </div>
+</div>
+
+<script>
+let projects = [], current = null, pollTimer = null;
+
+const $ = id => document.getElementById(id);
+const LS = { get(k, d) { try { return JSON.parse(localStorage.getItem(k)) ?? d; } catch { return d; } },
+             set(k, v) { try { localStorage.setItem(k, JSON.stringify(v)); } catch {} } };
+
+function settings() { return LS.get('ui-settings', { temperature: 0.3, cooldown: 4, maxTokens: 3072 }); }
+function toggleTheme() {
+  const d = document.documentElement.dataset.theme === 'dark' ? '' : 'dark';
+  document.documentElement.dataset.theme = d; LS.set('ui-theme', d);
+}
+document.documentElement.dataset.theme = LS.get('ui-theme', '');
+
+async function api(path, body) {
+  const r = await fetch(path, body ? { method: 'POST', headers: {'Content-Type': 'application/json'},
+                                       body: JSON.stringify(body) } : undefined);
+  return r.json();
+}
+
+function taskArgs() {
+  const s = settings();
+  return { settings: { temperature: s.temperature, cooldown: s.cooldown, maxTokens: s.maxTokens },
+           path: current ? current.path : null };
+}
+
+function renderProjects() {
+  $('proj-list').innerHTML = projects.map(p => `
+    <div class="proj-item ${current && current.path === p.path ? 'active' : ''}" onclick="selectProject('${p.path.replace(/\\/g, '\\\\').replace(/'/g, "\\'")}')">
+      <div class="name">${p.name} <span class="note">· ${p.parts} част.</span></div>
+      <div class="task">${p.task || ''}</div>
+    </div>`).join('') || '<p class="note">Пока нет проектов.</p>';
+}
+
+async function refresh() {
+  const d = await api('/api/projects');
+  projects = d.projects;
+  $('llm-dot').className = 'dot' + (d.llm ? ' ok' : '');
+  $('llm-label').textContent = d.llm ? 'модель работает' : 'модель не отвечает — builder\\START_server.bat';
+  if (!current && projects.length) current = projects[0];
+  if (current) {
+    current = projects.find(p => p.path === current.path) || current;
+    renderDetails();
+  }
+  renderProjects();
+}
+
+async function selectProject(path) {
+  current = projects.find(p => p.path === path);
+  LS.set('ui-project', path);
+  renderProjects();
+  renderDetails();
+}
+
+async function renderDetails() {
+  if (!current) return;
+  const d = await api('/api/project?path=' + encodeURIComponent(current.path));
+  $('proj-card').style.display = 'block';
+  $('empty-card').style.display = 'none';
+  $('proj-card').dataset.lessons = d.lessons || '';
+  $('proj-card').dataset.restartName = d.restart_name || '';
+  // кнопка перезапуска видна, когда проект в тупике: есть уроки или висят ошибки
+  const stuck = !!(d.lessons || d.errors.length);
+  $('btn-restart').style.display = stuck ? 'inline-block' : 'none';
+  if (stuck) $('btn-restart').textContent = d.errors.length
+    ? `🔄 Перезапустить с уроками (${d.errors.length} ошиб.)`
+    : '🔄 Перезапустить с уроками';
+  $('proj-title').textContent = '📦 ' + (d.title || d.name);
+  $('proj-task').textContent = d.task || '';
+  $('proj-dist').textContent = d.dist
+    ? `Сборка: ${d.dist} (${d.dist_lines} строк)` : 'Сборка ещё не создана — нажмите «Собрать»';
+  const rows = d.plan.map(p => `
+    <div class="plan-part"><span>${p.lines ? '✅' : '⬜'} ${p.name}</span>
+    <span class="lines">${p.desc}</span><span class="lines">${p.lines || '—'} стр.</span></div>`);
+  for (const p of d.extra_parts)
+    rows.push(`<div class="plan-part"><span>➕ ${p.name}</span><span class="lines">вне плана</span><span class="lines">${p.lines} стр.</span></div>`);
+  $('proj-plan').innerHTML = '<h2>Части</h2>' + rows.join('');
+  $('proj-errors').innerHTML = d.errors.length
+    ? `<div class="err">⚠ Проверки: ${d.errors.length} ошибок — «Проверить и исправить»<br>` +
+      d.errors.slice(0, 5).map(e => '· ' + e.replace(/</g, '&lt;')).join('<br>') + '</div>'
+    : (d.plan.some(p => p.lines) ? '<div class="okmsg">✔ Проверки чистые</div>' : '');
+  $('proj-card').dataset.notes = (d.notes || []).join('\n');
+}
+
+function jobButtons(running) {
+  ['btn-new', 'btn-step', 'btn-fix'].forEach(id => $(id).disabled = running);
+  $('btn-stop').style.display = running ? 'inline-block' : 'none';
+}
+
+async function pollJob() {
+  const j = await api('/api/job');
+  const badge = $('job-badge');
+  if (j.running) {
+    badge.innerHTML = `<span class="badge run">▶ ${j.title || 'задача'}</span>`;
+    jobButtons(true);
+    $('console').textContent = j.log || '…';
+    $('console').scrollTop = $('console').scrollHeight;
+  } else {
+    jobButtons(false);
+    if (j.exit !== undefined && j.exit !== null) {
+      badge.innerHTML = `<span class="badge ${j.exit === 0 ? 'done' : 'fail'}">${j.exit === 0 ? '✔ готово' : '✖ код ' + j.exit}</span>`;
+      $('console').textContent = j.log || '';
+    }
+  }
+}
+
+async function startNew() {
+  const task = $('new-task').value.trim();
+  if (task.length < 5) { alert('Опишите задачу подробнее'); return; }
+  const r = await api('/api/new', { ...taskArgs(), task, name: $('new-name').value.trim(),
+                                    lessons: $('new-lessons').value.trim() });
+  if (r.error) { alert(r.error); return; }
+  $('new-task').value = ''; $('new-name').value = ''; $('new-lessons').value = '';
+  setTimeout(refresh, 1000); pollJob();
+}
+async function doStep() {
+  const instruction = $('step-instr').value.trim();
+  if (instruction.length < 3) { alert('Введите инструкцию'); return; }
+  const r = await api('/api/step', { ...taskArgs(), instruction });
+  if (r.error) { alert(r.error); return; }
+  $('step-instr').value = ''; pollJob();
+}
+async function doFix() {
+  const r = await api('/api/fix', taskArgs());
+  if (r.error) { alert(r.error); return; }
+  pollJob();
+}
+async function doBuild() {
+  const r = await api('/api/build', { path: current && current.path });
+  if (r.error) { alert(r.error); return; }
+  refresh();
+}
+async function doStop() { await api('/api/stop', {}); pollJob(); }
+
+// Перезапуск: та же задача + уроки из этой версии, имя name-vN+1
+async function doRestart() {
+  if (!current) return;
+  const card = $('proj-card');
+  const lessons = card.dataset.lessons || '';
+  const name = card.dataset.restartName || (current.name + '-v2');
+  if (!confirm(`Создать новый проект "${name}"?\nЗадача и уроки текущей версии переносятся в ТЗ.`)) return;
+  const r = await api('/api/new', {
+    ...taskArgs(),
+    task: current.task || '',
+    name,
+    lessons
+  });
+  if (r.error) { alert(r.error); return; }
+  setTimeout(() => { refresh(); pollJob(); }, 1000);
+}
+
+function openSettings() {
+  const s = settings();
+  $('s-temp').value = s.temperature; $('s-cool').value = s.cooldown; $('s-maxtok').value = s.maxTokens;
+  syncSliders(); $('overlay').classList.add('open');
+}
+function closeSettings() { $('overlay').classList.remove('open'); }
+function syncSliders() {
+  $('s-temp-v').textContent = parseFloat($('s-temp').value).toFixed(2);
+  $('s-cool-v').textContent = $('s-cool').value + ' с';
+}
+['s-temp', 's-cool'].forEach(id => $(id).addEventListener('input', syncSliders));
+function saveSettings() {
+  LS.set('ui-settings', {
+    temperature: parseFloat($('s-temp').value),
+    cooldown: parseInt($('s-cool').value, 10),
+    maxTokens: parseInt($('s-maxtok').value, 10) || 3072
+  });
+  closeSettings();
+}
+
+refresh();
+pollTimer = setInterval(() => { pollJob(); }, 1500);
+setInterval(refresh, 10000);
+const saved = LS.get('ui-project', null);
+if (saved) current = { path: saved };
+</script>
+</body>
+</html>
